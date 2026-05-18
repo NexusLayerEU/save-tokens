@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SaveTokens — Live Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --green: #3fb950;
+    --blue: #58a6ff;
+    --purple: #bc8cff;
+    --orange: #f78166;
+    --yellow: #e3b341;
+    --red: #ff7b72;
+    --card: #21262d;
+    --accent: #1f6feb;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; min-height: 100vh; }
+
+  /* ── Header ── */
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    position: sticky; top: 0; z-index: 100;
+  }
+  .logo { font-size: 18px; font-weight: 700; color: var(--green); letter-spacing: -0.3px; }
+  .logo span { color: var(--blue); }
+  .tagline { color: var(--muted); font-size: 12px; }
+  .live-badge {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--muted);
+  }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.3s;
+  }
+  .live-dot.active { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+  /* ── Layout ── */
+  .layout { display: grid; grid-template-columns: 1fr 380px; gap: 0; height: calc(100vh - 56px); }
+  .main { padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+  .sidebar { border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── Cards ── */
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 8px; }
+  .card-value { font-size: 26px; font-weight: 700; line-height: 1; }
+  .card-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .card-value.green { color: var(--green); }
+  .card-value.blue { color: var(--blue); }
+  .card-value.purple { color: var(--purple); }
+  .card-value.yellow { color: var(--yellow); }
+
+  /* ── Chart ── */
+  .chart-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .chart-title { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+  .chart-wrap { height: 160px; }
+
+  /* ── Commands table ── */
+  .table-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    flex: 1;
+  }
+  .table-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td { padding: 8px 12px; border-bottom: 1px solid rgba(48,54,61,0.5); font-size: 13px; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.03); }
+  .cmd-name { font-family: 'Consolas', 'Monaco', monospace; color: var(--blue); }
+  .pct-bar { display: flex; align-items: center; gap: 8px; }
+  .bar { height: 4px; background: var(--border); border-radius: 2px; flex: 1; overflow: hidden; }
+  .bar-fill { height: 100%; background: var(--green); border-radius: 2px; transition: width 0.4s; }
+  .badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .badge-green { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-blue { background: rgba(88,166,255,0.15); color: var(--blue); }
+
+  /* ── Sidebar / Live Stream ── */
+  .sidebar-header {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+    background: var(--surface);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .stream-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+  }
+  .stream-item {
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(48,54,61,0.4);
+    animation: fadeIn 0.3s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity:1; transform:none; } }
+  .stream-item:last-child { border-bottom: none; }
+  .stream-cmd { font-family: 'Consolas', monospace; font-size: 12px; color: var(--blue); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px; }
+  .stream-meta { display: flex; gap: 8px; margin-top: 4px; align-items: center; flex-wrap: wrap; }
+  .stream-ts { font-size: 10px; color: var(--muted); }
+  .stream-saved { font-size: 11px; font-weight: 600; }
+  .stream-saved.good { color: var(--green); }
+  .stream-saved.neutral { color: var(--muted); }
+  .stream-cwd { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+  .stream-tokens { font-size: 10px; color: var(--muted); }
+  .empty-state { padding: 40px 16px; text-align: center; color: var(--muted); }
+  .empty-state .icon { font-size: 32px; margin-bottom: 8px; }
+  .empty-state p { font-size: 12px; line-height: 1.6; }
+  code { background: rgba(110,118,129,0.2); padding: 1px 4px; border-radius: 3px; font-family: monospace; font-size: 11px; }
+
+  .tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--surface); }
+  .tab {
+    padding: 8px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.2s;
+  }
+  .tab.active { color: var(--text); border-bottom-color: var(--blue); }
+  .tab:hover { color: var(--text); }
+
+  .tab-panel { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+  .tab-panel.active { display: flex; }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .no-data { color: var(--muted); font-size: 12px; text-align: center; padding: 20px; }
+  .today-badge { background: rgba(63,185,80,0.1); border: 1px solid rgba(63,185,80,0.2); border-radius: 4px; padding: 2px 8px; font-size: 11px; color: var(--green); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Save<span>Tokens</span></div>
+  <div class="tagline">CLI token compression proxy for AI coding tools</div>
+  <div class="live-badge">
+    <div class="live-dot" id="liveDot"></div>
+    <span id="liveStatus">connecting…</span>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- ── Main content ── -->
+  <div class="main">
+    <!-- Cards -->
+    <div class="cards">
+      <div class="card">
+        <div class="card-label">Tokens Saved</div>
+        <div class="card-value green" id="totalSaved">—</div>
+        <div class="card-sub" id="todaySaved">Today: —</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Avg Compression</div>
+        <div class="card-value blue" id="avgPct">—</div>
+        <div class="card-sub">Less context used</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Commands Filtered</div>
+        <div class="card-value purple" id="totalCalls">—</div>
+        <div class="card-sub" id="todayCalls">Today: —</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Est. $ Saved</div>
+        <div class="card-value yellow" id="dollarSaved">—</div>
+        <div class="card-sub">@ $3/M input tokens</div>
+      </div>
+    </div>
+
+    <!-- Daily Chart -->
+    <div class="chart-card">
+      <div class="chart-title">Tokens Saved per Day <span class="today-badge">Last 30 days</span></div>
+      <div class="chart-wrap">
+        <canvas id="dailyChart"></canvas>
+      </div>
+    </div>
+
+    <!-- By-command breakdown -->
+    <div class="table-card">
+      <div class="table-header">
+        📊 Savings by Command
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Command</th>
+            <th>Calls</th>
+            <th>Tokens Saved</th>
+            <th>Compression</th>
+          </tr>
+        </thead>
+        <tbody id="cmdTable">
+          <tr><td colspan="4" class="no-data">No data yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── Sidebar: live stream ── -->
+  <div class="sidebar">
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('stream')">⚡ Live Stream</div>
+      <div class="tab" onclick="switchTab('history')">📋 History</div>
+    </div>
+
+    <div class="tab-panel active" id="tab-stream">
+      <div class="sidebar-header">
+        <span>Request Stream</span>
+        <span id="streamCount" style="font-size:11px;color:var(--muted)">0 events</span>
+      </div>
+      <div class="stream-list" id="streamList">
+        <div class="empty-state">
+          <div class="icon">⚡</div>
+          <p>Waiting for commands…<br><br>
+          Run any command via:<br>
+          <code>savetokens git status</code><br>
+          <code>savetokens ls -la</code><br><br>
+          Or install the hook to auto-intercept:</p>
+          <p style="margin-top:8px"><code>savetokens --install-hook</code></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="tab-history">
+      <div class="sidebar-header">
+        <span>Recent History</span>
+        <span id="historyCount" style="font-size:11px;color:var(--muted)">—</span>
+      </div>
+      <div class="stream-list" id="historyList">
+        <div class="no-data">Loading…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let chart;
+let streamCount = 0;
+const MAX_STREAM = 100;
+
+// ── Tab switching ──────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t, i) => {
+    t.classList.toggle('active', ['stream','history'][i] === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  if (name === 'history') loadHistory();
+}
+
+// ── Formatting ─────────────────────────────────────────────────────────────────
+function fmtTokens(n) {
+  if (!n) return '0';
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+  return n.toString();
+}
+function fmtTime(iso) {
+  const d = new Date(iso);
+  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+function shortCwd(cwd) {
+  if (!cwd) return '';
+  const parts = cwd.split('/');
+  return parts.slice(-2).join('/');
+}
+
+// ── Stats ──────────────────────────────────────────────────────────────────────
+async function loadStats() {
+  try {
+    const res = await fetch('/api/stats');
+    const data = await res.json();
+    const t = data.total || {};
+    const today = data.today || {};
+
+    document.getElementById('totalSaved').textContent = fmtTokens(t.saved_tokens);
+    document.getElementById('avgPct').textContent = Math.round(t.avg_pct || 0) + '%';
+    document.getElementById('totalCalls').textContent = (t.calls || 0).toLocaleString();
+    document.getElementById('dollarSaved').textContent = '$' + ((t.saved_tokens || 0) / 1_000_000 * 3).toFixed(3);
+    document.getElementById('todaySaved').textContent = 'Today: ' + fmtTokens(today.saved_tokens);
+    document.getElementById('todayCalls').textContent = 'Today: ' + (today.calls || 0);
+
+    renderCmdTable(data.byCmd || []);
+    renderChart(data.daily || []);
+  } catch (e) {
+    console.error('Stats error', e);
+  }
+}
+
+function renderCmdTable(cmds) {
+  const tbody = document.getElementById('cmdTable');
+  if (!cmds.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="no-data">No commands yet</td></tr>';
+    return;
+  }
+  const max = Math.max(...cmds.map(c => c.saved_tokens || 0), 1);
+  tbody.innerHTML = cmds.map(c => {
+    const pct = Math.round(c.avg_pct || 0);
+    const barW = Math.round(((c.saved_tokens || 0) / max) * 100);
+    return `<tr>
+      <td><span class="cmd-name">${escHtml(c.command)}</span></td>
+      <td><span class="badge badge-blue">${c.calls}</span></td>
+      <td>
+        <div class="pct-bar">
+          <span style="color:var(--green);font-size:12px;min-width:50px">${fmtTokens(c.saved_tokens)}</span>
+          <div class="bar"><div class="bar-fill" style="width:${barW}%"></div></div>
+        </div>
+      </td>
+      <td><span class="badge badge-green">${pct}%</span></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderChart(daily) {
+  const labels = daily.map(d => d.day ? d.day.slice(5) : '');
+  const saved = daily.map(d => d.saved_tokens || 0);
+  const orig = daily.map(d => d.orig_tokens || 0);
+
+  const ctx = document.getElementById('dailyChart').getContext('2d');
+  if (chart) chart.destroy();
+  chart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Tokens Saved',
+          data: saved,
+          backgroundColor: 'rgba(63,185,80,0.7)',
+          borderRadius: 3,
+          order: 1,
+        },
+        {
+          label: 'Original Tokens',
+          data: orig,
+          type: 'line',
+          borderColor: 'rgba(88,166,255,0.5)',
+          backgroundColor: 'transparent',
+          pointRadius: 2,
+          borderWidth: 1.5,
+          tension: 0.3,
+          order: 0,
+        }
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 300 },
+      plugins: {
+        legend: {
+          display: true,
+          labels: { color: '#8b949e', font: { size: 11 }, boxWidth: 10, padding: 12 }
+        },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${fmtTokens(ctx.parsed.y)}`
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#21262d' } },
+        y: { ticks: { color: '#8b949e', font: { size: 10 }, callback: v => fmtTokens(v) }, grid: { color: '#21262d' } }
+      }
+    }
+  });
+}
+
+// ── Stream item ────────────────────────────────────────────────────────────────
+function makeStreamItem(ev) {
+  const pct = ev.savedPct || 0;
+  const cls = pct >= 30 ? 'good' : 'neutral';
+  const saved = ev.savedTokens || 0;
+  const ts = ev.ts ? fmtTime(ev.ts) : '';
+  return `
+    <div class="stream-item">
+      <div class="stream-cmd" title="${escHtml(ev.argv || '')}">${escHtml(ev.argv || ev.command || '')}</div>
+      <div class="stream-meta">
+        <span class="stream-ts">${ts}</span>
+        <span class="stream-saved ${cls}">-${pct}% (${fmtTokens(saved)} tokens saved)</span>
+      </div>
+      <div class="stream-meta">
+        <span class="stream-cwd">${escHtml(shortCwd(ev.cwd || ''))}</span>
+        <span class="stream-tokens">${fmtTokens(ev.origTokens)} → ${fmtTokens(ev.compTokens)}</span>
+      </div>
+    </div>
+  `;
+}
+
+// ── SSE ────────────────────────────────────────────────────────────────────────
+function connectSSE() {
+  const evtSrc = new EventSource('/events');
+  const dot = document.getElementById('liveDot');
+  const status = document.getElementById('liveStatus');
+
+  evtSrc.onopen = () => {
+    dot.classList.add('active');
+    status.textContent = 'live';
+  };
+
+  evtSrc.addEventListener('command', e => {
+    const ev = JSON.parse(e.data);
+    streamCount++;
+    document.getElementById('streamCount').textContent = `${streamCount} events`;
+
+    // Prepend to stream list
+    const list = document.getElementById('streamList');
+    // Remove empty state if present
+    const empty = list.querySelector('.empty-state');
+    if (empty) empty.remove();
+
+    const div = document.createElement('div');
+    div.innerHTML = makeStreamItem(ev);
+    list.insertBefore(div.firstElementChild, list.firstChild);
+
+    // Limit DOM size
+    while (list.children.length > MAX_STREAM) list.removeChild(list.lastChild);
+
+    // Refresh stats every 5 events
+    if (streamCount % 5 === 0) loadStats();
+    else loadStats(); // always refresh for responsiveness
+  });
+
+  evtSrc.onerror = () => {
+    dot.classList.remove('active');
+    status.textContent = 'reconnecting…';
+    setTimeout(connectSSE, 3000);
+    evtSrc.close();
+  };
+}
+
+// ── History ────────────────────────────────────────────────────────────────────
+async function loadHistory() {
+  const list = document.getElementById('historyList');
+  try {
+    const res = await fetch('/api/requests?limit=100');
+    const rows = await res.json();
+    document.getElementById('historyCount').textContent = `${rows.length} events`;
+    if (!rows.length) {
+      list.innerHTML = '<div class="no-data">No history yet</div>';
+      return;
+    }
+    list.innerHTML = rows.map(r => makeStreamItem({
+      ...r,
+      savedTokens: r.saved_tokens,
+      origTokens: r.orig_tokens,
+      compTokens: r.comp_tokens,
+      savedPct: r.saved_pct,
+      durationMs: r.duration_ms,
+    })).join('');
+  } catch (e) {
+    list.innerHTML = '<div class="no-data">Error loading history</div>';
+  }
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────────
+loadStats();
+connectSSE();
+setInterval(loadStats, 15000); // refresh every 15s
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "savetokens",
+  "version": "1.0.0",
+  "description": "CLI proxy that compresses AI tool command output to save LLM tokens, with live web dashboard",
+  "main": "server.js",
+  "bin": {
+    "savetokens": "./bin/savetokens"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

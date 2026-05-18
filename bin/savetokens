@@ -1,0 +1,251 @@
+#!/usr/bin/env node
+'use strict';
+// savetokens — CLI wrapper that compresses command output to save LLM tokens.
+//
+// Usage:
+//   savetokens git status
+//   savetokens ls -la
+//   savetokens grep -r "foo" .
+//
+// Install hook for Claude Code:
+//   savetokens --install-hook
+//
+// View dashboard:
+//   savetokens --dashboard
+
+const { spawnSync } = require('child_process');
+const http = require('http');
+const path = require('path');
+const os = require('os');
+
+const SERVER_PORT = process.env.SAVETOKENS_PORT || 4044;
+const SERVER_URL = `http://localhost:${SERVER_PORT}`;
+
+// ── Resolve filters relative to this script ──────────────────────────────────
+const LIB_DIR = path.join(__dirname, '..', 'lib');
+const { applyFilter, countTokens } = require(path.join(LIB_DIR, 'filters'));
+
+// ── Special commands ──────────────────────────────────────────────────────────
+
+const args = process.argv.slice(2);
+
+if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
+  console.log(`
+savetokens — Token-saving CLI proxy for AI coding tools
+  
+Usage:
+  savetokens <command> [args...]   Run command with filtered output
+  savetokens --dashboard           Open web dashboard
+  savetokens --install-hook        Install Claude Code bash hook
+  savetokens --stats               Print token savings summary
+  savetokens --version             Show version
+
+Examples:
+  savetokens git status
+  savetokens ls -la src/
+  savetokens grep -r "TODO" .
+  savetokens npm test
+
+Dashboard: http://localhost:${SERVER_PORT}
+`);
+  process.exit(0);
+}
+
+if (args[0] === '--version' || args[0] === '-v') {
+  console.log('savetokens 1.0.0');
+  process.exit(0);
+}
+
+if (args[0] === '--dashboard') {
+  const { exec } = require('child_process');
+  exec(`open ${SERVER_URL}`);
+  console.log(`Opening ${SERVER_URL}`);
+  process.exit(0);
+}
+
+if (args[0] === '--stats') {
+  printStats();
+  process.exit(0);
+}
+
+if (args[0] === '--install-hook') {
+  installHook();
+  process.exit(0);
+}
+
+// ── Main: wrap the command ────────────────────────────────────────────────────
+
+const cmdString = args.join(' ');
+const [exe, ...rest] = args;
+
+const start = Date.now();
+
+// Run the original command, capturing all output
+const result = spawnSync(exe, rest, {
+  encoding: 'buffer',
+  stdio: ['inherit', 'pipe', 'pipe'],
+  shell: false,
+  maxBuffer: 10 * 1024 * 1024, // 10MB max
+});
+
+const durationMs = Date.now() - start;
+
+if (result.error) {
+  // Command not found or spawn failed — pass through error
+  process.stderr.write(result.error.message + '\n');
+  process.exit(1);
+}
+
+const rawStdout = (result.stdout || Buffer.alloc(0)).toString('utf8');
+const rawStderr = (result.stderr || Buffer.alloc(0)).toString('utf8');
+const combined = rawStdout + rawStderr;
+
+// Apply filter
+const { filtered, origTokens, compTokens } = applyFilter(cmdString, combined);
+
+const origBytes = Buffer.byteLength(combined);
+const compBytes = Buffer.byteLength(filtered);
+const savedTokens = origTokens - compTokens;
+const savedPct = origTokens > 0 ? Math.round((savedTokens / origTokens) * 100) : 0;
+
+// Write compressed output
+process.stdout.write(filtered);
+if (filtered.length > 0 && !filtered.endsWith('\n')) process.stdout.write('\n');
+
+// Send event to web server then exit — use sync curl to avoid async race with process.exit()
+const eventPayload = JSON.stringify({
+  ts: new Date().toISOString(),
+  command: exe,
+  argv: cmdString,
+  origBytes,
+  compBytes,
+  origTokens,
+  compTokens,
+  savedTokens,
+  savedPct,
+  durationMs,
+  cwd: process.cwd(),
+});
+
+postEventSync(eventPayload);
+
+process.exit(result.status ?? 0);
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Use spawnSync curl to POST synchronously before process.exit()
+function postEventSync(payload) {
+  try {
+    spawnSync('curl', [
+      '-s', '-o', '/dev/null',
+      '-X', 'POST',
+      '-H', 'Content-Type: application/json',
+      '-d', payload,
+      '--connect-timeout', '0.5',
+      '--max-time', '1',
+      `${SERVER_URL}/api/event`,
+    ], { stdio: 'ignore' });
+  } catch (_) {} // never block the CLI
+}
+
+function printStats() {
+  // Read from DB directly
+  const dbPath = path.join(os.homedir(), '.local', 'share', 'savetokens', 'events.db');
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(dbPath);
+    const row = db.prepare(`
+      SELECT COUNT(*) as calls,
+        SUM(saved_tokens) as saved_tokens,
+        SUM(orig_tokens) as orig_tokens,
+        AVG(saved_pct) as avg_pct
+      FROM events
+    `).get();
+    const cost = ((row.saved_tokens || 0) / 1_000_000 * 3).toFixed(4);
+    console.log(`
+SaveTokens Stats:
+  Total commands filtered : ${row.calls || 0}
+  Tokens saved            : ${(row.saved_tokens || 0).toLocaleString()}
+  Original tokens         : ${(row.orig_tokens || 0).toLocaleString()}
+  Avg compression         : ${Math.round(row.avg_pct || 0)}%
+  Estimated $ saved       : $${cost} (@ $3/M input)
+  
+Dashboard: http://localhost:${SERVER_PORT}
+`);
+  } catch (e) {
+    console.log('No stats yet. Run some commands first!\nDashboard:', SERVER_URL);
+  }
+}
+
+function installHook() {
+  const scriptPath = path.resolve(__filename);
+  const hookContent = `#!/usr/bin/env bash
+# SaveTokens hook for Claude Code PreToolUse:Bash
+# Transparently wraps bash commands to compress their output.
+
+INPUT=$(cat)
+CMD=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('command',''))" 2>/dev/null)
+
+if [ -z "$CMD" ]; then exit 0; fi
+
+# Skip complex shell constructs
+case "$CMD" in
+  *'&&'*|*'||'*|*'|'*|*'>'*|*'<'*|*'$('*|*'<<'*) exit 0 ;;
+esac
+
+# Commands that benefit from SaveTokens filtering
+SHOULD_WRAP=false
+case "$CMD" in
+  ls\ *|ls|find\ *|grep\ *|rg\ *|cat\ *|head\ *|tail\ *) SHOULD_WRAP=true ;;
+  git\ status*|git\ diff*|git\ log*|git\ show*|git\ blame*) SHOULD_WRAP=true ;;
+  cargo\ build*|cargo\ test*|cargo\ check*|cargo\ clippy*) SHOULD_WRAP=true ;;
+  npm\ test*|npx\ jest*|pytest*|go\ test*) SHOULD_WRAP=true ;;
+  npm\ install*|pip\ install*|yarn\ install*) SHOULD_WRAP=true ;;
+  docker\ ps*|docker\ images*) SHOULD_WRAP=true ;;
+esac
+
+if [ "$SHOULD_WRAP" = "false" ]; then exit 0; fi
+
+# Rewrite the command to use savetokens
+REWRITTEN="savetokens $CMD"
+
+python3 -c "
+import sys, json
+data = json.loads('$(echo "$INPUT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")')
+data['tool_input']['command'] = '$REWRITTEN'
+print(json.dumps({
+  'hookSpecificOutput': {
+    'hookEventName': 'PreToolUse',
+    'permissionDecision': 'allow',
+    'permissionDecisionReason': 'SaveTokens auto-wrap',
+    'updatedInput': data['tool_input']
+  }
+}))
+"
+`;
+
+  const hookDir = path.join(os.homedir(), '.claude', 'hooks');
+  const fs = require('fs');
+  fs.mkdirSync(hookDir, { recursive: true });
+  const hookPath = path.join(hookDir, 'savetokens-hook.sh');
+  fs.writeFileSync(hookPath, hookContent, { mode: 0o755 });
+
+  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+  let settings = {};
+  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
+  settings.hooks = settings.hooks || {};
+  settings.hooks['PreToolUse:Bash'] = settings.hooks['PreToolUse:Bash'] || [];
+  if (!settings.hooks['PreToolUse:Bash'].includes(hookPath)) {
+    settings.hooks['PreToolUse:Bash'].push(hookPath);
+  }
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+
+  console.log(`✅ SaveTokens hook installed!
+   Hook:     ${hookPath}
+   Settings: ${settingsPath}
+   
+Restart Claude Code to activate. Commands like git status, ls, grep, etc.
+will automatically flow through SaveTokens.
+Watch the live stream at: http://localhost:${SERVER_PORT}
+`);
+}
